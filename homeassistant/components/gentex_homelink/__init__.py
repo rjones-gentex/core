@@ -1,12 +1,20 @@
 """The homelink integration."""
 
-from aiohttp import ClientResponseError
+import aiohttp
 from homelink.mqtt_provider import MQTTProvider
 
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    ConfigEntryNotReady,
+    OAuth2TokenRequestError,
+    OAuth2TokenRequestReauthError,
+)
 from homeassistant.helpers import aiohttp_client, config_entry_oauth2_flow
+from homeassistant.helpers.config_entry_oauth2_flow import (
+    ImplementationUnavailableError,
+)
 
 from . import oauth2
 from .const import DOMAIN
@@ -18,11 +26,6 @@ PLATFORMS: list[Platform] = [Platform.EVENT]
 async def async_setup_entry(hass: HomeAssistant, entry: HomeLinkConfigEntry) -> bool:
     """Set up homelink from a config entry."""
     auth_implementation = oauth2.HomeLinkOAuth2Implementation(hass, DOMAIN)
-    try:
-        await auth_implementation.async_refresh_token(entry.data["token"])
-    except ClientResponseError as err:
-        raise ConfigEntryAuthFailed(err) from err
-
     config_entry_oauth2_flow.async_register_implementation(
         hass, DOMAIN, auth_implementation
     )
@@ -33,13 +36,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: HomeLinkConfigEntry) -> 
                 hass, entry
             )
         )
-    except config_entry_oauth2_flow.ImplementationUnavailableError as err:
+    except ImplementationUnavailableError as err:
         raise ConfigEntryNotReady(
             translation_domain=DOMAIN,
             translation_key="oauth2_implementation_unavailable",
         ) from err
 
     session = config_entry_oauth2_flow.OAuth2Session(hass, entry, implementation)
+
+    try:
+        await session.async_ensure_token_valid()
+    except OAuth2TokenRequestReauthError as err:
+        raise ConfigEntryAuthFailed(err) from err
+    except (OAuth2TokenRequestError, aiohttp.ClientError) as err:
+        raise ConfigEntryNotReady from err
+
     authenticated_session = oauth2.AsyncConfigEntryAuth(
         aiohttp_client.async_get_clientsession(hass), session
     )
